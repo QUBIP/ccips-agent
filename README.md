@@ -1,6 +1,7 @@
 # ccips-agent
 Pilot 3 CCIPS agent component
 
+ © Mattin Antartiko Elorza Forcada
 ## Agents
 In this scenario we are deploying two Agent running in docker mode.
 
