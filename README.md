@@ -5,6 +5,10 @@ Pilot 3 CCIPS agent component
 ## Agents
 In this scenario we are deploying two Agent running in docker mode.
 
+```bash!
+docker build -t ccips_agent .
+```
+
 Here you only need to run as follows in each agent.
 ```bash!
 docker run -it --network host --cap-add ALL --name ccips_agent --rm ccips_agent
