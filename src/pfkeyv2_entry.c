@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018 Gabriel López <gabilm@um.es>, Rafael Marín <rafa@um.es>, Fernando Pereñiguez <fernando.pereniguez@cud.upct.es> 
- *
+ * GCM and algorithm improvements Copyright (c) 2026 Mattin Antartiko Elorza Forcada <mattinantartiko.elorzaforcada@telefonica.com> 
+ * 
  * This file is part of cfgipsec2.
  *
  * cfgipsec2 is free software: you can redistribute it and/or modify
