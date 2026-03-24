@@ -51,6 +51,30 @@ static inline void memwipe(void *ptr, size_t n)
 		explicit_bzero(ptr, n);
 	}
 }
+//añadido
+static size_t hex2bin(const char *hex, unsigned char *out, size_t out_max)
+{
+	size_t len = strlen(hex);
+	size_t i;
+
+	if (len % 2 != 0) {
+		return 0;
+	}
+
+	if ((len / 2) > out_max) {
+		return 0;
+	}
+
+	for (i = 0; i < len / 2; i++) {
+		unsigned int byte;
+		if (sscanf(hex + (2 * i), "%2x", &byte) != 1) {
+			return 0;
+		}
+		out[i] = (unsigned char)byte;
+	}
+
+	return len / 2;
+}
 
 
 static uint8_t proto2satype(uint8_t proto)
@@ -556,17 +580,31 @@ int pf_addsad(sad_entry_node *sad_node) {
     saext->sadb_sa_replay = sad_node->anti_replay_window;
     saext->sadb_sa_state = SADB_SASTATE_MATURE;
     saext->sadb_sa_encrypt = sad_node->encryption_alg;
-    saext->sadb_sa_auth = sad_node->integrity_alg;
+    if (sad_node->encryption_alg == SADB_X_EALG_AES_GCM_ICV16) { //añadido
+	saext->sadb_sa_auth = SADB_AALG_NONE;
+    } else {
+	saext->sadb_sa_auth = sad_node->integrity_alg;
+    }
     saext->sadb_sa_flags = 0;
     len += saext->sadb_sa_len * 8;
     p += saext->sadb_sa_len * 8;
 
     sa2 = (struct sadb_x_sa2*) p;
+
+    memset(sa2, 0, sizeof(struct sadb_x_sa2));
+
     sa2->sadb_x_sa2_exttype = SADB_X_EXT_SA2;
-    sa2->sadb_x_sa2_len = sizeof(struct sadb_spirange)/8;
+    sa2->sadb_x_sa2_len = sizeof(struct sadb_x_sa2) / 8;
     sa2->sadb_x_sa2_mode = sad_node->ipsec_mode;
     sa2->sadb_x_sa2_reqid = sad_node->req_id;
-    //sa2->sadb_x_sa2_sequence = sad_node->seq_number;
+    sa2->sadb_x_sa2_sequence = 0;
+
+    DBG("SA2 ext: mode=%u reqid=%u sequence=%u len=%u",
+        sa2->sadb_x_sa2_mode,
+        sa2->sadb_x_sa2_reqid,
+        sa2->sadb_x_sa2_sequence,
+        sa2->sadb_x_sa2_len);
+
     len += sa2->sadb_x_sa2_len * 8;
     p += sa2->sadb_x_sa2_len * 8;
     
@@ -658,11 +696,23 @@ int pf_addsad(sad_entry_node *sad_node) {
             // SADB_X_EALG_AES_GCM_ICV16
             } else if (sad_node -> encryption_alg==SADB_X_EALG_AES_GCM_ICV16) {
                 DBG("selected SADB_X_EALG_AES_GCM_ICV16");
-                keyext->sadb_key_len = (sizeof(*keyext) + (EAL_AES_GCM_ICV16_KEY_BITS/8) + 7) / 8;
-                keyext->sadb_key_bits = EAL_AES_GCM_ICV16_KEY_BITS;
+                /* AES-128 key (16 bytes) + RFC4106 salt (4 bytes) = 20 bytes */
+	            keyext->sadb_key_len = (sizeof(*keyext) + 20 + 7) / 8;
+	            keyext->sadb_key_bits = 160;
             }
             INFO("-----------Key length %d",keyext->sadb_key_len); 
-            memcpy(keyext + 1, sad_node->encryption_key, strlen(sad_node->encryption_key));
+            {//añadido
+                unsigned char key_bin[128];
+                size_t key_len_bytes = hex2bin(sad_node->encryption_key, key_bin, sizeof(key_bin));
+
+                if (key_len_bytes == 0) {
+                    ERR("invalid encryption key hex");
+                    close(s);
+                    return SR_ERR_OPERATION_FAILED;
+                }
+
+                memcpy(keyext + 1, key_bin, key_len_bytes);
+            }
             //DBG("PFKEY ADD SAD - enc key: %s\n", sad_node->encryption_key);
             //unsigned char *tmp_string = hexToByte(sad_node->encryption_key);
             //memcpy(keyext + 1, tmp_string, keyext->sadb_key_bits/8);
@@ -672,7 +722,8 @@ int pf_addsad(sad_entry_node *sad_node) {
     }
 
     // TODO support more algorithms
-    if(sad_node->integrity_alg != SADB_AALG_NONE){
+    if (sad_node->encryption_alg != SADB_X_EALG_AES_GCM_ICV16 &&
+    sad_node->integrity_alg != SADB_AALG_NONE) {
         keyext = (struct sadb_key *) p;
             keyext->sadb_key_exttype = SADB_EXT_KEY_AUTH;
             keyext->sadb_key_reserved = 0;
@@ -689,19 +740,61 @@ int pf_addsad(sad_entry_node *sad_node) {
                     keyext->sadb_key_bits = AALG_SHA2_256HMAC_KEY_BITS;
             }
             DBG("PFKEY ADD SAD - int key: %s\n", sad_node->integrity_key);
-            //unsigned char *tmp_string = hexToByte(sad_node->integrity_key);
-            //memcpy(keyext + 1, tmp_string, (keyext->sadb_key_bits)/8);
-            memcpy(keyext + 1, sad_node->integrity_key,  strlen(sad_node->integrity_key));
+            
+            {
+                unsigned char key_bin[128];
+                size_t key_len_bytes = hex2bin(sad_node->integrity_key, key_bin, sizeof(key_bin));
+
+                if (key_len_bytes == 0) {
+                    ERR("invalid integrity key hex");
+                    close(s);
+                    return SR_ERR_OPERATION_FAILED;
+                }
+
+                memcpy(keyext + 1, key_bin, key_len_bytes);
+            }
             len += keyext->sadb_key_len * 8;
             p += keyext->sadb_key_len * 8;
+    }else {
+    DBG("AUTH key extension skipped");
     }
     msg->sadb_msg_len = len / 8;
+
     INFO("print_sadb_msg pfkeyv2_addsad:");
     print_sadb_msg(buf, len);
     TRACE("end print_sadb_msg pfkeyv2_addsad:");
+
     Write(s, buf, len);
-    close(s);
-    return SR_ERR_OK;
+
+    {
+        int msglen;
+        char replybuf[8192];
+        struct sadb_msg *reply;
+
+        DBG("PFKEY SAD sent to kernel, waiting reply...");
+        msglen = Read(s, &replybuf, sizeof(replybuf));
+        reply = (struct sadb_msg *)replybuf;
+
+        DBG("kernel SADB reply: type=%u errno=%u satype=%u seq=%u pid=%u len=%u",
+            reply->sadb_msg_type,
+            reply->sadb_msg_errno,
+            reply->sadb_msg_satype,
+            reply->sadb_msg_seq,
+            reply->sadb_msg_pid,
+            reply->sadb_msg_len);
+
+        print_sadb_msg(replybuf, msglen);
+
+        if (reply->sadb_msg_errno != 0) {
+            ERR("kernel rejected SADB_ADD: %s", strerror(reply->sadb_msg_errno));
+            close(s);
+            return SR_ERR_OPERATION_FAILED;
+        }
+}
+
+close(s);
+
+return SR_ERR_OK;
 }
 
 // int pf_delsad_v2(sad_entry_node *sad_node) {

@@ -1,4 +1,5 @@
 #include "sysrepo_entries.h"
+#include "xfrm_netlink.h"
 
 sad_entry_node *init_sad_node = NULL;
 spd_entry_node* init_spd_node = NULL;
@@ -513,34 +514,40 @@ int del_sad_node(char *sad_name) {
     return SR_ERR_OK;
 }
 
-int removeSAD_entry(sr_session_ctx_t *sess, sr_change_iter_t *it,char *xpath,char *sad_name) {
+int removeSAD_entry(sr_session_ctx_t *sess, sr_change_iter_t *it, char *xpath, char *sad_name) {
 
     int rc = SR_ERR_OK;
 
-    DBG("SAD entry REMOVE: %s",sad_name);
+    DBG("SAD entry REMOVE: %s", sad_name);
 
     sad_entry_node *node = get_sad_node(sad_name);
     if (node != NULL) {
-        rc = pf_delsad(node);
-        if (SR_ERR_OK != rc){
-            ERR("Remove SAD in pfkeyv2_delsad: %s",sr_strerror(rc));
+        if (node->encryption_alg == SADB_X_EALG_AES_GCM_ICV16) {
+            DBG("AES-GCM detected, using XFRM netlink for DEL SAD");
+            rc = xfrm_delsad_aead(node);
+        } else {
+            rc = pf_delsad(node);
+        }
+
+        if (SR_ERR_OK != rc) {
+            ERR("Remove SAD in delsad: %s", sr_strerror(rc));
             rc = SR_ERR_OPERATION_FAILED;
         } else {
             rc = del_sad_node(sad_name);
             if (rc != SR_ERR_OK) {
-                ERR("Remove SAD entry in del_sad_node: %s",sr_strerror(rc));
+                ERR("Remove SAD entry in del_sad_node: %s", sr_strerror(rc));
                 rc = SR_ERR_OPERATION_FAILED;
-            } else rc = SR_ERR_OK;
+            } else {
+                rc = SR_ERR_OK;
+            }
         }
-    } else{
+    } else {
         rc = SR_ERR_OPERATION_FAILED;
-        ERR("Remove SAD, spi not found: %s",sr_strerror(rc));
+        ERR("Remove SAD, spi not found: %s", sr_strerror(rc));
     }
 
     show_sad_list();
     return rc;
-
-
 }
 
 int readSAD_entry(sr_session_ctx_t *sess, sr_change_iter_t *it,char *xpath,sad_entry_node *sad_node) {
@@ -722,13 +729,20 @@ int readSAD_entry(sr_session_ctx_t *sess, sr_change_iter_t *it,char *xpath,sad_e
 						DBG("encryption_keyt: %s",sad_node->encryption_key);
 					}
 					if (NULL != strstr(value->xpath,"/integrity")) {
-						remove_colon(sad_node->integrity_key,value->data.string_val);
-                        DBG("integrity_key: %s",sad_node->integrity_key);
+						if (sad_node->encryption_alg != SADB_X_EALG_AES_GCM_ICV16) {
+							remove_colon(sad_node->integrity_key, value->data.string_val);
+							DBG("integrity_key: %s", sad_node->integrity_key);
+						}
                     }
 			}
             else if (0 == strcmp("/integrity-algorithm", name)) {
-            	sad_node->integrity_alg = value->data.int16_val;
-                DBG("integrity: %i",sad_node->integrity_alg);
+            	if (sad_node->encryption_alg == SADB_X_EALG_AES_GCM_ICV16) {
+					sad_node->integrity_alg = SADB_AALG_NONE;
+				} else {
+					sad_node->integrity_alg = value->data.int16_val;
+				}
+
+				DBG("integrity: %i", sad_node->integrity_alg);
             }
 			
 			else if (0 == strcmp("/local", name)) {
@@ -830,12 +844,17 @@ int addSAD_entry(sr_session_ctx_t *sess, sr_change_iter_t *it,char *xpath,char *
     }
 
     add_sad_node(sad_node);
-    rc = pf_addsad(sad_node);
+		if (sad_node->encryption_alg == SADB_X_EALG_AES_GCM_ICV16) {
+		DBG("AES-GCM detected, using XFRM netlink for SAD");
+		rc = xfrm_addsad_aead(sad_node);
+	} else {
+		rc = pf_addsad(sad_node);
+	}
 
-    if (SR_ERR_OK != rc) {
-        ERR("ADD SAD in getSAD_entry: %s", sr_strerror(rc));
-        return rc;     
-    }
+	if (rc != SR_ERR_OK) {
+		ERR("ADD SAD in getSAD_entry: %s", sr_strerror(rc));
+		return rc;
+	}
  
     //INFO("SAD entry added! ");
     show_sad_list();
